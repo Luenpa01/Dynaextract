@@ -20,8 +20,8 @@ def dynamodb_item_to_dict(item):
             result[k] = v
     return result
 
-def ejecutar_comando(table_name, fecha_inicio_ts=None, fecha_fin_ts=None, product_id=None):
-    """Ejecuta el comando aws-dynamodb-parallel-scan y retorna la ruta al archivo temporal generado."""
+def ejecutar_y_escribir_csv(table_name, output_csv, fecha_inicio_ts=None, fecha_fin_ts=None, product_id=None):
+    """Ejecuta aws-dynamodb-parallel-scan escribiendo JSONL y CSV en tiempo real."""
 
     comando = [
         "aws-dynamodb-parallel-scan",
@@ -41,31 +41,31 @@ def ejecutar_comando(table_name, fecha_inicio_ts=None, fecha_fin_ts=None, produc
             "--expression-attribute-values", json.dumps(attr_values)
         ]
 
-    with tempfile.NamedTemporaryFile(delete=False, mode="w+", suffix=".jsonl") as temp_file:
-        with subprocess.Popen(comando, stdout=temp_file, stderr=subprocess.PIPE) as proc:
-            _, stderr = proc.communicate()
-            if proc.returncode != 0:
-                raise Exception(stderr.decode())
-        return temp_file.name
-
-def procesar_y_escribir_csv(ruta_jsonl, output_csv):
-    with open(ruta_jsonl, "r") as f_in, open(output_csv, "w", newline='', encoding="utf-8") as f_out:
+    with tempfile.NamedTemporaryFile(delete=False, mode="w+", suffix=".jsonl") as temp_file, \
+         open(output_csv, "w", newline='', encoding="utf-8") as f_out:
         writer = None
         count = 0
-        for line in tqdm(f_in, desc="[✓] Escribiendo CSV en tiempo real"):
-            try:
-                response = json.loads(line)
-                for item in response.get("Items", []):
-                    flat_item = dynamodb_item_to_dict(item)
-                    if writer is None:
-                        fieldnames = list(flat_item.keys())
-                        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
-                        writer.writeheader()
-                    writer.writerow(flat_item)
-                    count += 1
-            except json.JSONDecodeError:
-                continue
-    return count
+        with subprocess.Popen(comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+            for line in tqdm(proc.stdout, desc="[✓] Escribiendo CSV en tiempo real"):
+                temp_file.write(line)
+                try:
+                    response = json.loads(line)
+                    for item in response.get("Items", []):
+                        flat_item = dynamodb_item_to_dict(item)
+                        if writer is None:
+                            fieldnames = list(flat_item.keys())
+                            writer = csv.DictWriter(f_out, fieldnames=fieldnames)
+                            writer.writeheader()
+                        writer.writerow(flat_item)
+                        count += 1
+                except json.JSONDecodeError:
+                    continue
+
+            stderr = proc.stderr.read()
+            if proc.wait() != 0:
+                raise Exception(stderr)
+
+    return count, temp_file.name
 
 def main():
     parser = argparse.ArgumentParser(
@@ -87,11 +87,14 @@ def main():
         if args.fecha_inicio and args.fecha_fin and args.product_id:
             ts_ini = fecha_a_timestamp(args.fecha_inicio)
             ts_fin = fecha_a_timestamp(args.fecha_fin)
-        print("[⌛] Ejecutando escaneo paralelo...")
-        archivo_jsonl = ejecutar_comando(args.table_name, ts_ini, ts_fin, args.product_id)
-
-        print("[📦] Procesando y escribiendo CSV...")
-        total = procesar_y_escribir_csv(archivo_jsonl, args.output)
+        print("[⌛] Ejecutando escaneo y escribiendo CSV...")
+        total, archivo_jsonl = ejecutar_y_escribir_csv(
+            args.table_name,
+            args.output,
+            ts_ini,
+            ts_fin,
+            args.product_id,
+        )
 
         if total == 0:
             print("[✘] No se encontraron elementos.")
