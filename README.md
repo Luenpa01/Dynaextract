@@ -1,6 +1,7 @@
 # Dynaextract
 
 Herramienta para extraer masivamente datos de tablas DynamoDB utilizando `aws-dynamodb-parallel-scan`.
+Mientras se ejecuta el escaneo, el CSV se va generando en tiempo real.
 
 ## Uso
 
